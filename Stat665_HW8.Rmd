@@ -1,0 +1,103 @@
+---
+title: "Homework 8"
+author: "Michelle Zamperlini"
+date: "2023-10-25"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(geepack)
+library(tidyverse)
+```
+
+Analyzing the marketing strategy of using higher prices and giving out coupons to targeted customers to either make them switch to our microSDHC cards and/or choose our brand from the start.
+
+## Problem 1
+
+We will be looking at the log odds ratio of selecting our brand over another (represented in below as \(Brand\)). To begin analyzing the variables of interest, we fit the following 4 general linear models with a logit family: 
+- \(Brand = \beta_0 + \beta_1x_{discount} \)
+- \(Brand = \beta_0 + \beta_1x_{discount} + \beta_2x_{region}\)
+- \(Brand = \beta_0 + \beta_1x_{discount} + \beta_2x_{region} + \beta_3x_{PricePayed}\)
+- \(Brand = \beta_0 + \beta_1x_{discount} + \beta_2x_{region} + \beta_3x_{PricePayed} + \beta_4x_{region}x_{PricePayed}\)
+
+```{r, echo = FALSE}
+
+data <- read.csv("sdhc_cards_sold.csv") %>%
+  arrange(customer)
+
+data$us_region <- as.factor(data$us_region)
+data$discount <- as.factor(data$discount)
+
+glm_model1 <- glm(our_brand ~ 1 + discount,
+                 data = data,
+                 family = binomial('logit'))
+
+glm_model2 <- glm(our_brand ~ 1 + us_region + discount,
+                  data = data,
+                  family = binomial('logit'))
+
+glm_model3 <- glm(our_brand ~ 1 + us_region + price_payed + discount,
+                  data = data,
+                  family = binomial('logit'))
+
+glm_model4 <- glm(our_brand ~ 1 + us_region*price_payed + discount,
+                  data = data,
+                  family = binomial('logit'))
+
+anova(glm_model1, glm_model2, glm_model3, glm_model4)
+AIC(glm_model1, glm_model2, glm_model3, glm_model4)
+```
+
+Decreasing residual deviance demonstrates that each of the models is subsequently a better fit for the data compared to the saturated model, but looking at the AIC we see that model3 is 2 units lower than model 4, we therefore classify it as the best fit model. Therefore, we conclude model 3 without interaction, \(Brand = \beta_0 + \beta_1x_{discount} + \beta_2x_{region} + \beta_3x_{PricePayed}\), is the best for model fit. 
+
+Using this model, the ratio of the odds of choosing our brand with a 5% discount versus no discount is \(6.75\), with an approximate 95% confidence interval for this odds ratio of \((2.48, 20.16)\).
+
+```{r, echo=FALSE, message=FALSE, warning=FALSE}
+sort(exp(c(coef(glm_model3)['discount0.05'],
+               confint(glm_model3, parm = 'discount0.05'))))
+```
+
+## Problem 2
+The GEE is better for our analysis plan than customer-specific intercepts on the following three points:
+
+#### i) differences in the dependency structure
+By performing a customer-specific GLM, the dependency is injected in the model through the parameterization, but it assumes independence. Whereas GEE allows specification of an initial dependency structure for the clusters. In the former model, if the assumption of independence is violated, then we cannot guarantee our Type I error during our statistical testing. The GEE dependency structures allow us maintain our designated Type I error for testing without losing power.
+
+#### ii) differences in efficiency
+Taking into account all the customers by using a customer-specific GLM would add a new intercept for each customer and make the model increasingly complex, difficult to interpret, and computationally expensive. Using the GEE injects the necessary dependencies but allows the parameters to remain interpretable. 
+
+#### iii) goals of the analysis
+A customer-specific model cannot be extrapolated to the entire population, it only makes inferences about the clusters observed in the study. For our goals, we want to make inferences about a larger population than just the customers within the initial data collection. 
+
+## Problem 3
+
+#### a) Does the GEE fit suggest there is dependence between purchases by the same customer? Report the estimated correlation between the 1st and 2nd purchase by a customer, and between the 1st and 3rd purchase.
+
+To analyze the dependency structure mentioned above, we fit a GEE with an AR(1) working correlation structure. With this structure, observations further apart within a cluster are less correlated than those that are closer. The summary below is for such a model.
+
+Importantly, we look toward the alpha value reported under "Estimated Correlation Parameters". The value of \(\alpha=.387\) represents that there is a .387 correlation between the 1st and 2nd purchases, a value large enough to say there is a dependence between purchases made by the same customer. Meanwhile, the correlation between the 1st and 3rd purchas is estimated to be \(\alpha^2 = .15\). 
+
+```{r, echo = FALSE}
+gee_model <- geeglm(our_brand ~ 1 + us_region + price_payed + discount,
+       data = data,
+       corstr = 'ar1',
+       id = factor(customer),
+       family = binomial('logit'))
+
+summary(gee_model)
+```
+
+#### b) Compare the estimated odds ratio for choosing your brand with a 5% discount versus no discount (also consider the 95% CI).
+
+The following r code shows that our estimate for the odds ratio of, with a 5% discount, choosing our brand vs choosing our brand with no discount is 3.58. Therefore the odds of choosing our brand is three and a half times higher when given a 5% discount. The 95% confidence interval for this odds ratio is \((1.64,7.82)\). The confidence interval is rather large, but entirely positive and so we are confident of the significance at alpha = 95%.
+
+```{r}
+exp((coef(gee_model)['discount0.05'] + c(-1, 0, 1) * 1.96 * sqrt(diag(vcov(gee_model))['discount0.05'])))
+```
+
+#### c) Why do we see such differences in the estimated odds ratio from the GLM and GEE models.
+
+To remind ourselves, the estimate of the odds ratio for the 5% discount from the general linear model is \(6.75\), and for the GEE it was \(3.58\). Once we accounted for the dependency within clusters, i.e. accounting for correlation within a customer's purchases, the odds ratio halved. More interestingly, we see a substantial reduction in the range of the confidence intervals between these models. From the GLM, \((2.48, 20.16)\), and from the GEE, \((1.64,7.82)\). Part of the variance in our model is being accounted for with the clustering, which makes the estimate for the parameter of the odds ratio for the 5% discount better, i.e. results in a narrower confidence interval.
+It's entirely possible that the confidence interval from the GLM, although it was calculated as a 95% confidence interval, does not have a type I error of .05 as we believe the observations within the clusters to be correlated, violating the assumption of independence. This could account for how much wider it is than the GEE confidence interval. 
+
